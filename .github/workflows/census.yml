@@ -1,0 +1,39 @@
+name: census
+# Continuous, survivorship-free census of new Solana DEX pools. Each run records ~5h40m, flushing every
+# 10 minutes, then dispatches its own successor. The 30-minute schedule is only a watchdog that restarts
+# the chain if it dies; the concurrency group collapses duplicates (max 1 running + 1 pending).
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/30 * * * *"
+permissions:
+  contents: write
+  actions: write
+concurrency:
+  group: census
+  cancel-in-progress: false
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - name: Record new pools
+        env:
+          RUN_MIN: "340"
+          FLUSH_MIN: "10"
+        run: |
+          git config user.name "meme-census-bot"
+          git config user.email "meme-census-bot@users.noreply.github.com"
+          python3 census.py
+      - name: Dispatch next run
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/census.yml/dispatches" \
+            -d '{"ref":"main"}'
