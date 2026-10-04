@@ -1,0 +1,49 @@
+name: prices
+# Hourly OHLCV for census pools at fixed age milestones (see prices.py). Idle until pools reach 41 days.
+# A run that ends with work left dispatches its successor; the 6-hourly schedule is the watchdog.
+on:
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Smoke test: 20 pools, 30-min milestone, release ohlcv-test-*, log ohlcv_log_test/"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "23 */6 * * *"
+permissions:
+  contents: write
+  actions: write
+concurrency:
+  group: prices
+  cancel-in-progress: false
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - run: pip install -q pandas pyarrow
+      - run: python3 test_prices.py
+      - name: Pull due OHLCV
+        id: pull
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRICES_TEST: ${{ inputs.test && '1' || '0' }}
+          RUN_MIN: ${{ inputs.test && '5' || '330' }}
+          FLUSH_MIN: "30"
+          CALLS_PER_MIN: "25"
+        run: |
+          git config user.name "meme-census-bot"
+          git config user.email "meme-census-bot@users.noreply.github.com"
+          python3 prices.py
+      - name: Dispatch next run if work remains
+        if: steps.pull.outputs.more == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/prices.yml/dispatches" \
+            -d '{"ref":"main"}'
