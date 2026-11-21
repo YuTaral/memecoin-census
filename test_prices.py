@@ -63,6 +63,29 @@ def test_empty_or_missing_marks_dead():
     assert P.plan(t, log([["x", 41, "", "missing", 0, "", "", ""]]), T0 + 200 * D) == []
 
 
+def test_fetch_429_retries_fast_and_gives_up():
+    import json
+    ok = (200, json.dumps({"data": {"attributes": {"ohlcv_list": [[1, 1, 1, 1, 1, 1]]}}}).encode())
+    sleeps, seq = [], []
+    real_http, real_sleep = P.http, P.time.sleep
+    P.http = lambda *a, **k: seq.pop(0)
+    P.time.sleep = sleeps.append
+    try:
+        seq[:] = [(429, b""), (429, b""), ok]
+        assert P.fetch("p", 1, 2.4) == ("ok", [[1, 1, 1, 1, 1, 1]])
+        assert [round(x, 2) for x in sleeps] == [3.6, 5.4] and max(sleeps) < 30          # short, growing waits (was a flat 30 s)
+        assert P.retry_wait(2.4, 12) == P.RATE_WAIT_MAX             # capped
+        seq[:] = [(404, b"")]
+        assert P.fetch("p", 1) == ("missing", [])
+        seq[:] = [(429, b"")] * P.MAX_429
+        assert P.fetch("p", 1) == ("error", [])                     # persistent 429 -> error, retried later by plan()
+        seq[:] = [(500, b"")] * 5
+        assert P.fetch("p", 1) == ("error", [])
+        assert P.STATS["r429"] >= 2 + P.MAX_429
+    finally:
+        P.http, P.time.sleep = real_http, real_sleep
+
+
 if __name__ == "__main__":
     for f in [v for k, v in dict(globals()).items() if k.startswith("test_")]:
         f()

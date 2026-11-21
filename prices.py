@@ -26,6 +26,8 @@ LOGDIR = "ohlcv_log_test" if TEST else "ohlcv_log"
 DEAD_DAYS = 30
 HISTORY_DAYS = 179          # API keeps 180 days; 1 day margin
 WINDOW_H = 1000
+MAX_429, RATE_WAIT_MAX = 12, 30   # consecutive 429s before a fetch is logged as error; cap on one wait (s)
+STATS = {"calls": 0, "r429": 0}
 SAMPLE_PCT, SEED = 5, 23
 DONE = {"ok", "empty", "missing", "expired"}
 LOG_COLS = ["pool", "milestone", "fetched_at", "status", "n", "first_ts", "last_ts", "asset"]
@@ -92,15 +94,30 @@ def http(url, data=None, headers=None, method=None):
         return 0, b""
 
 
-def fetch(pool, b):
-    for k in range(5):
+def fetch(pool, b, gap=2.4):
+    """One window. The free API answers 429 instantly (Retry-After 0) and clears within seconds: measured
+    2026-11 at ~35 % of calls at any pace and any hour. Retry after a short wait that grows only while the
+    429s keep coming; the old flat 30 s sleep cost ~65 % of the run time (4.3 fetches/min instead of ~13)."""
+    n429 = n_err = 0
+    while n429 < MAX_429 and n_err < 5:
+        STATS["calls"] += 1
         st, body = http(OHLCV.format(pool, b), headers={"Accept": "application/json", "User-Agent": "meme-census"})
         if st == 200:
             return "ok", json.loads(body)["data"]["attributes"]["ohlcv_list"]
         if st == 404:
             return "missing", []
-        time.sleep(30 if st == 429 else 5 * (k + 1))
+        if st == 429:
+            STATS["r429"] += 1
+            n429 += 1
+            time.sleep(retry_wait(gap, n429))
+        else:
+            n_err += 1
+            time.sleep(5 * n_err)
     return "error", []
+
+
+def retry_wait(gap, n429):
+    return min(RATE_WAIT_MAX, gap * 1.5 ** n429)
 
 
 class Releases:
@@ -164,7 +181,9 @@ def flush(rel, candles, logrows):
             break
         git("pull", "-q", "--rebase", "origin", "main")
         time.sleep(5 * (i + 1))
-    print(len(logrows), "fetches,", len(candles), "candles ->", name, flush=True)
+    print(len(logrows), "fetches,", len(candles), "candles ->", name,
+          f"| api calls {STATS['calls']}, 429s {STATS['r429']}", flush=True)
+    STATS.update(calls=0, r429=0)
     return True
 
 
@@ -185,7 +204,7 @@ def main():
         if expired:
             logrows.append([pool, m, now, "expired", 0, "", ""])
             continue
-        st, rows = fetch(pool, b)
+        st, rows = fetch(pool, b, gap)
         candles += [[pool, *r] for r in rows]
         ts = [r[0] for r in rows]
         logrows.append([pool, m, now, "empty" if st == "ok" and not rows else st, len(rows),
