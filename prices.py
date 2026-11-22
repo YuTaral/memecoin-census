@@ -22,6 +22,10 @@ TEST = os.environ.get("PRICES_TEST") == "1"   # live smoke test: 30-min mileston
 if TEST:
     MILESTONES = [0.02]
 PFX = "ohlcv-test" if TEST else "ohlcv"
+# Parallel runners: GeckoTerminal lets each GitHub runner IP make only ~5 calls/min, so the work is split by pool
+# across NSHARDS matrix jobs (each its own IP); file names carry the shard so no two jobs write the same file.
+SHARD, NSHARDS = int(os.environ.get("SHARD", 0)), int(os.environ.get("NSHARDS", 1))
+SUFFIX = f"-s{SHARD}" if NSHARDS > 1 else ""
 LOGDIR = "ohlcv_log_test" if TEST else "ohlcv_log"
 DEAD_DAYS = 30
 HISTORY_DAYS = 179          # API keeps 180 days; 1 day margin
@@ -38,6 +42,11 @@ OHLCV = ("https://api.geckoterminal.com/api/v2/networks/solana/pools/{}/ohlcv/ho
 # ---------------------------------------------------------------- planning (pure, unit-tested)
 def in_sample(pool):
     return int(hashlib.sha1(f"{SEED}:{pool}".encode()).hexdigest(), 16) % 100 < SAMPLE_PCT
+
+
+def in_shard(pool, shard=None, n=None):
+    shard, n = SHARD if shard is None else shard, NSHARDS if n is None else n
+    return n == 1 or int(hashlib.sha1(f"shard:{pool}".encode()).hexdigest(), 16) % n == shard
 
 
 def targets(census):
@@ -132,6 +141,9 @@ class Releases:
                 st, body = http(f"https://api.github.com/repos/{self.repo}/releases", method="POST", headers=self.h,
                                 data=json.dumps({"tag_name": tag, "name": tag, "target_commitish": "main",
                                                  "body": "Hourly OHLCV parquet assets (see prices.py)."}).encode())
+                if st not in (200, 201):                              # another shard may have just created it
+                    time.sleep(5)
+                    st, body = http(f"https://api.github.com/repos/{self.repo}/releases/tags/{tag}", headers=self.h)
                 if st not in (200, 201):
                     raise RuntimeError(f"release {tag}: {st} {body[:200]}")
             self.ids[tag] = json.loads(body)["id"]
@@ -161,14 +173,14 @@ def flush(rel, candles, logrows):
     if not logrows:
         return True
     now = dt.datetime.utcnow()
-    tag, name = now.strftime(PFX + "-%Y-%m"), now.strftime("ohlcv-%Y%m%d-%H%M%S.parquet")
+    tag, name = now.strftime(PFX + "-%Y-%m"), now.strftime("ohlcv-%Y%m%d-%H%M%S") + SUFFIX + ".parquet"
     if candles:
         df = pd.DataFrame(candles, columns=["pool", "ts", "o", "h", "l", "c", "v_usd"])
         buf = io.BytesIO()
         df.to_parquet(buf, index=False, compression="zstd")
         if not rel.upload(tag, name, buf.getvalue()):
             return False
-    path = now.strftime(LOGDIR + "/%Y/%m/%d/%H%M%S.csv.gz")
+    path = now.strftime(LOGDIR + "/%Y/%m/%d/%H%M%S") + SUFFIX + ".csv.gz"
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with gzip.open(path, "wt", newline="") as f:
         w = csv.writer(f)
@@ -187,15 +199,25 @@ def flush(rel, candles, logrows):
     return True
 
 
+def remaining():
+    """Due milestones over all shards (run by the workflow's chain job after every shard has finished)."""
+    n = len(plan(targets(read_all("census/**/*.csv.gz")), read_all(LOGDIR + "/**/*.csv.gz"), int(time.time())))
+    print("remaining due:", n, flush=True)
+    with open(os.environ.get("GITHUB_OUTPUT", os.devnull), "a") as f:
+        f.write(f"more={'true' if n and not TEST else 'false'}\n")
+
+
 def main():
+    if "--remaining" in sys.argv:
+        return remaining()
     run_min, flush_min = float(os.environ.get("RUN_MIN", 330)), float(os.environ.get("FLUSH_MIN", 30))
     gap = 60 / float(os.environ.get("CALLS_PER_MIN", 25))
     t_end, t_flush = time.time() + run_min * 60, time.time() + flush_min * 60
     rel = Releases(os.environ["GITHUB_REPOSITORY"], os.environ["GH_TOKEN"])
     t = targets(read_all("census/**/*.csv.gz"))
     log = read_all(LOGDIR + "/**/*.csv.gz")
-    todo = plan(t, log, int(time.time()))[:20 if TEST else None]
-    print(len(t), "targets,", len(todo), "due", flush=True)
+    todo = [x for x in plan(t, log, int(time.time())) if in_shard(x[0])][:20 if TEST else None]
+    print(len(t), "targets,", len(todo), f"due in shard {SHARD}/{NSHARDS}", flush=True)
     candles, logrows = [], []
     for pool, m, b, expired in todo:
         if time.time() > t_end:
@@ -215,10 +237,6 @@ def main():
             t_flush = time.time() + flush_min * 60
         time.sleep(gap)
     flush(rel, candles, logrows)
-    remaining = len(plan(t, read_all(LOGDIR + "/**/*.csv.gz"), int(time.time())))
-    print("remaining due:", remaining, flush=True)
-    with open(os.environ.get("GITHUB_OUTPUT", os.devnull), "a") as f:
-        f.write(f"more={'true' if remaining and not TEST else 'false'}\n")
 
 
 if __name__ == "__main__":

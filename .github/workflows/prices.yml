@@ -1,6 +1,7 @@
 name: prices
 # Hourly OHLCV for census pools at fixed age milestones (see prices.py). Idle until pools reach 41 days.
-# A run that ends with work left dispatches its successor; the 6-hourly schedule is the watchdog.
+# Work is split across NSHARDS parallel runners (GeckoTerminal allows ~5 calls/min per runner IP). After all shards
+# finish, the chain job dispatches the next run if work remains; the 6-hourly schedule is the watchdog.
 on:
   workflow_dispatch:
     inputs:
@@ -20,6 +21,10 @@ jobs:
   pull:
     runs-on: ubuntu-latest
     timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -35,12 +40,30 @@ jobs:
           RUN_MIN: ${{ inputs.test && '5' || '330' }}
           FLUSH_MIN: "30"
           CALLS_PER_MIN: "25"
+          SHARD: ${{ matrix.shard }}
+          NSHARDS: "2"
         run: |
           git config user.name "meme-census-bot"
           git config user.email "meme-census-bot@users.noreply.github.com"
           python3 prices.py
+  chain:
+    needs: pull
+    if: ${{ !cancelled() && needs.pull.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 1
+      - run: pip install -q pandas pyarrow
+      - name: Count remaining due milestones
+        id: rem
+        env:
+          PRICES_TEST: ${{ inputs.test && '1' || '0' }}
+        run: python3 prices.py --remaining
       - name: Dispatch next run if work remains
-        if: steps.pull.outputs.more == 'true'
+        if: steps.rem.outputs.more == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

@@ -86,6 +86,17 @@ def test_fetch_429_retries_fast_and_gives_up():
         P.http, P.time.sleep = real_http, real_sleep
 
 
+def test_shards_disjoint_and_complete():
+    pools = [f"p{i}" for i in range(3000)]
+    for n in (1, 2, 3):
+        owners = [[s for s in range(n) if P.in_shard(p, s, n)] for p in pools]
+        assert all(len(o) == 1 for o in owners)                      # every pool in exactly one shard
+        if n > 1:
+            sizes = [sum(o[0] == s for o in owners) for s in range(n)]
+            assert min(sizes) > 0.8 * len(pools) / n                  # roughly balanced
+    assert P.in_sample("p1") == P.in_sample("p1")                     # shard salt independent of the 5 % sample
+
+
 if __name__ == "__main__":
     for f in [v for k, v in dict(globals()).items() if k.startswith("test_")]:
         f()
