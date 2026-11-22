@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1]
+        shard: [0, 1, 2]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -41,7 +41,7 @@ jobs:
           FLUSH_MIN: "30"
           CALLS_PER_MIN: "25"
           SHARD: ${{ matrix.shard }}
-          NSHARDS: "2"
+          NSHARDS: "3"
         run: |
           git config user.name "meme-census-bot"
           git config user.email "meme-census-bot@users.noreply.github.com"
