@@ -9,7 +9,8 @@ against the 180-day history limit, which is why the oldest pools go first. One c
 (41.7 days), so milestones 41/82/123/164/180 cover the first 180 days. A pool with no candle in the last
 DEAD_DAYS of a fetched window is marked dead and not fetched again.
 
-Storage: candles -> parquet asset on GitHub release `ohlcv-YYYY-MM` (keeps git small); progress log ->
+Storage: candles -> parquet asset on GitHub release `ohlcv-GGGG-Www` (ISO week; monthly `ohlcv-YYYY-MM` before 2026-11-22;
+keeps git small); progress log ->
 ohlcv_log/YYYY/MM/DD/HHMMSS.csv.gz in git, written only after its asset uploaded, so the log never points at
 missing data.
 """
@@ -169,11 +170,16 @@ def read_all(pattern):
     return pd.concat([pd.read_csv(f) for f in fs], ignore_index=True) if fs else pd.DataFrame()
 
 
+def release_tag(now):
+    """One release per ISO week keeps the asset count per release small (3 shards x short runs add up fast)."""
+    return now.strftime(PFX + "-%G-W%V")
+
+
 def flush(rel, candles, logrows):
     if not logrows:
         return True
     now = dt.datetime.utcnow()
-    tag, name = now.strftime(PFX + "-%Y-%m"), now.strftime("ohlcv-%Y%m%d-%H%M%S") + SUFFIX + ".parquet"
+    tag, name = release_tag(now), now.strftime("ohlcv-%Y%m%d-%H%M%S") + SUFFIX + ".parquet"
     if candles:
         df = pd.DataFrame(candles, columns=["pool", "ts", "o", "h", "l", "c", "v_usd"])
         buf = io.BytesIO()
@@ -200,11 +206,13 @@ def flush(rel, candles, logrows):
 
 
 def remaining():
-    """Due milestones over all shards (run by the workflow's chain job after every shard has finished)."""
+    """Due milestones over all shards (run by the workflow's chain job after every shard has finished). Chain only
+    when at least MIN_CHAIN are due; smaller backlogs wait for the 6-hourly schedule (avoids a run every few minutes)."""
     n = len(plan(targets(read_all("census/**/*.csv.gz")), read_all(LOGDIR + "/**/*.csv.gz"), int(time.time())))
-    print("remaining due:", n, flush=True)
+    more = n >= int(os.environ.get("MIN_CHAIN", 1)) and n > 0 and not TEST
+    print("remaining due:", n, "-> chain" if more else "-> wait for schedule", flush=True)
     with open(os.environ.get("GITHUB_OUTPUT", os.devnull), "a") as f:
-        f.write(f"more={'true' if n and not TEST else 'false'}\n")
+        f.write(f"more={'true' if more else 'false'}\n")
 
 
 def main():

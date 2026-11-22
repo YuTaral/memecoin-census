@@ -13,6 +13,6 @@ GeckoTerminal `new_pools` endpoint, captured continuously by GitHub Actions. Dea
   (seed 23) of pump-fun bonding-curve pools.
 - One hourly-OHLCV call per pool at ages 41/82/123/164/180 days (anchored at creation + age, so late runs return
   the same window). Pools with no trade in the last 30 days of a window are marked dead and dropped.
-- Candles: parquet assets on releases `ohlcv-YYYY-MM`. Progress log: `ohlcv_log/YYYY/MM/DD/*.csv.gz`
+- Candles: parquet assets on releases `ohlcv-YYYY-MM` (to 2026-11-22), then weekly `ohlcv-GGGG-Www` (ISO week). Progress log: `ohlcv_log/YYYY/MM/DD/*.csv.gz`
   (pool, milestone, fetched_at, status, n, first_ts, last_ts, asset).
 - Runs every 6 h (and chains itself while work remains); idle until the first pools reach 41 days (2026-11-14).

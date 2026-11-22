@@ -61,6 +61,7 @@ jobs:
         id: rem
         env:
           PRICES_TEST: ${{ inputs.test && '1' || '0' }}
+          MIN_CHAIN: "600"
         run: python3 prices.py --remaining
       - name: Dispatch next run if work remains
         if: steps.rem.outputs.more == 'true'

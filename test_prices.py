@@ -97,6 +97,12 @@ def test_shards_disjoint_and_complete():
     assert P.in_sample("p1") == P.in_sample("p1")                     # shard salt independent of the 5 % sample
 
 
+def test_release_tag_weekly():
+    import datetime as dt
+    assert P.release_tag(dt.datetime(2026, 11, 22, 10)) == P.PFX + "-2026-W47"
+    assert P.release_tag(dt.datetime(2027, 1, 1)) == P.PFX + "-2026-W53"      # ISO year
+
+
 if __name__ == "__main__":
     for f in [v for k, v in dict(globals()).items() if k.startswith("test_")]:
         f()
